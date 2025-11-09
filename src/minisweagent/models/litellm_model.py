@@ -40,6 +40,15 @@ class LitellmModel:
         if self.config.litellm_model_registry is not None:
             litellm.utils.register_model(json.loads(Path(self.config.litellm_model_registry).read_text()))
 
+        from nemo_gym.server_utils import ServerClient
+        from nemo_gym.global_config import get_global_config_dict
+        self.server_client = ServerClient(
+            head_server_config=ServerClient.load_head_server_config(),
+            global_config_dict=get_global_config_dict(),
+        )
+
+        self.model_server_cookies = None
+
     def _add_tokens_ids_to_messages(self, messages: list[dict[str, str]], responses: list[dict[str, str]]):
         processed_messages = []
         responses_idx = 0
@@ -59,57 +68,38 @@ class LitellmModel:
 
         return processed_messages
 
-    @retry(
-        # Never stop
-        # stop=stop_after_attempt(3),
-        # Retry frequently
-        # wait=wait_exponential(multiplier=1, min=5, max=15),
-        wait=wait_exponential(multiplier=1, min=1, max=1),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
-        retry=retry_if_not_exception_type(
-            (
-                litellm.exceptions.UnsupportedParamsError,
-                litellm.exceptions.NotFoundError,
-                litellm.exceptions.PermissionDeniedError,
-                litellm.exceptions.ContextWindowExceededError,
-                litellm.exceptions.APIError,
-                litellm.exceptions.AuthenticationError,
-                KeyboardInterrupt,
-            )
-        ),
-    )
-    def _query(self, messages: list[dict[str, str]], responses: list[dict[str, str]], **kwargs):
+    async def _query(self, messages: list[dict[str, str]], responses: list[dict[str, str]], **kwargs):
+        from pydantic import ValidationError
+
+        from nemo_gym.server_utils import raise_for_status
+        from nemo_gym.openai_utils import NeMoGymResponse
+
+        body = dict(
+            model=self.config.model_name,
+            messages=self._add_tokens_ids_to_messages(messages, responses),
+            **(self.config.model_kwargs | kwargs),
+        )
+        model_response = await self.server_client.post(
+            server_name=self.config.model_server.name,
+            url_path="/v1/chat/completions",
+            json=body,
+            cookies=self.model_server_cookies,
+        )
+        # We raise for status here since we expect model calls to always work.
+        await raise_for_status(model_response)
+        model_response_json = await model_response.json()
+        self.model_server_cookies = self.model_server_cookies or model_response.cookies
         try:
-            raw_cookie = (
-                self.response_headers.get(SET_COOKIE_ID)
-                if self.response_headers and SET_COOKIE_ID in self.response_headers
-                else None
-            )
-            extra_headers = kwargs.get("extra_headers", {}).copy()
-            extra_headers["X-Client-ID"] = self.x_client_id
-            if raw_cookie:
-                cookie_value = raw_cookie.split(";")[0].strip()
-                extra_headers["Cookie"] = cookie_value
+            model_response = NeMoGymResponse.model_validate(model_response_json)
+        except ValidationError as e:
+            raise RuntimeError(
+                f"Received an invalid response from model server: {json.dumps(model_response_json)}"
+            ) from e
 
-            response = litellm.completion(
-                model=self.config.model_name,
-                messages=self._add_tokens_ids_to_messages(messages, responses),
-                timeout=7200,  # 2 hours,
-                extra_headers=extra_headers,
-                **(self.config.model_kwargs | kwargs),
-            )
-            if not self.response_headers:
-                self.response_headers = response._response_headers
-            return response
-        except litellm.exceptions.AuthenticationError as e:
-            e.message += " You can permanently set your API key with `mini-extra config set KEY VALUE`."
-            raise e
-        except Exception as e:
-            print(f"Retrying after hit error in LitellmModel._query: {e}")
-            raise e
+        return model_response
 
-    def query(self, messages: list[dict[str, str]], responses: list[dict[str, str]], **kwargs) -> dict:
-        response = self._query(messages, responses, **kwargs)
+    async def query(self, messages: list[dict[str, str]], responses: list[dict[str, str]], **kwargs) -> dict:
+        response = await self._query(messages, responses, **kwargs)
         if hasattr(response.choices[0].message, "provider_specific_fields"):
             provider_specific_fields = response.choices[0].message.provider_specific_fields
         else:
