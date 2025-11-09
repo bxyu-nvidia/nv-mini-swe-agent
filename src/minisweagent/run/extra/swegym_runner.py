@@ -301,7 +301,7 @@ def filter_instances(
     return instances
 
 
-def _main(
+async def _main(
     subset: str = "gym",
     split: str = "train",
     slice_spec: str = "",
@@ -356,59 +356,28 @@ def _main(
     )
     results = {}
 
-    def process_futures(futures: dict[concurrent.futures.Future, str]):
-        completed = 0
-        total = len(futures)
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                data, eval_report = future.result()
-                completed += 1
-                print(f"Progress: {completed}/{total} instances completed", flush=True)
-                if data is None:
-                    continue
-                results[data["instance_id"]] = data
-                results[data["instance_id"]]["eval_report"] = eval_report
-            except concurrent.futures.CancelledError:
-                pass
-            except Exception as e:
-                instance_id = futures[future]
-                print(f"Error in future for instance {instance_id}: {e}", flush=True)
-                traceback.print_exc()
-                progress_manager.on_uncaught_exception(instance_id, e)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(
-                process_instance,
-                instance,
-                output_path,
-                model,
-                config,
-                progress_manager,
-                convert_to_sif,
-                api_key,
-                base_url,
-                env_cls,
-                responses_create_params,
-                cache_dir_template,
-                run_id,
-                subset,
-                run_golden,
-                step_timeout,
-                eval_timeout,
-                step_limit,
-                collapse_limit,
-            ): instance["instance_id"]
-            for instance in instances
-        }
-        try:
-            process_futures(futures)
-        except KeyboardInterrupt:
-            print("Cancelling all pending jobs. Press ^C again to exit immediately.", flush=True)
-            for future in futures:
-                if not future.running() and not future.done():
-                    future.cancel()
-            process_futures(futures)
+    data, eval_report = await process_instance(
+        instance,
+        output_path,
+        model,
+        config,
+        progress_manager,
+        convert_to_sif,
+        api_key,
+        base_url,
+        env_cls,
+        responses_create_params,
+        cache_dir_template,
+        run_id,
+        subset,
+        run_golden,
+        step_timeout,
+        eval_timeout,
+        step_limit,
+        collapse_limit,
+    )
+    results[data["instance_id"]] = data
+    results[data["instance_id"]]["eval_report"] = eval_report
 
     return results
 
