@@ -307,7 +307,7 @@ timeout {pip_timeout} uv pip install --no-cache-dir --python {venv_path}/bin/pyt
 
         print(f"Selected port {self.port} for container server")
 
-    def execute(self, command: str, cwd: str = "", is_eval: bool = False) -> dict[str, Any]:
+    async def execute(self, command: str, cwd: str = "", is_eval: bool = False) -> dict[str, Any]:
         """
         Executes a command by calling the API endpoint in the container.
 
@@ -332,15 +332,16 @@ timeout {pip_timeout} uv pip install --no-cache-dir --python {venv_path}/bin/pyt
         subprocess_timeout = self.config.eval_timeout if is_eval else self.config.step_timeout
         http_timeout = subprocess_timeout + 30
 
+        from nemo_gym.server_utils import request
         try:
-            response = requests.post(
-                f"http://localhost:{self.port}/run_command",
+            response = request(
+                method="POST",
+                url=f"http://localhost:{self.port}/run_command",
                 json={"command": command, "timeout": subprocess_timeout},
-                timeout=http_timeout,
             )
             response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
+            return await response.json()
+        except Exception as e:
             print(f"Failed to execute command via API: {e}")
             # If the server process died, show the logs
             if self.server_process.poll() is not None:
