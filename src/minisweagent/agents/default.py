@@ -115,7 +115,7 @@ class DefaultAgent:
         else:
             self.collapse_warnings = 0
 
-    def run(self, task: str) -> tuple[str, str]:
+    async def run(self, task: str) -> tuple[str, str]:
         """Run step() until agent is finished. Return exit status & message"""
         self.messages = []
         self.collapse_warnings = 0
@@ -132,18 +132,19 @@ class DefaultAgent:
             self.add_message("user", self.render_template(self.config.instance_template, task=task))
         while True:
             try:
-                self.step()
+                await self.step()
             except NonTerminatingException as e:
                 self.add_message("user", str(e))
             except TerminatingException as e:
                 self.add_message("user", str(e))
                 return type(e).__name__, str(e)
 
-    def step(self) -> dict:
+    async def step(self) -> dict:
         """Query the LM, execute the action, return the observation."""
-        return self.get_observation(self.query())
+        response = await self.query()
+        return await self.get_observation(response)
 
-    def query(self) -> dict:
+    async def query(self) -> dict:
         """Query the model and return the response."""
         if 0 < self.config.step_limit <= self.model.n_calls or 0 < self.config.cost_limit <= self.model.cost:
             raise LimitsExceeded()
@@ -155,7 +156,7 @@ class DefaultAgent:
             if key in self.responses_create_params
         }
 
-        response = self.model.query(self.messages, self.responses, **kwargs)
+        response = await self.model.query(self.messages, self.responses, **kwargs)
         if not response["content"]:
             # If content is empty, we assume Gym model has raised out of context error.
             raise LimitsExceeded()
@@ -164,9 +165,9 @@ class DefaultAgent:
         self.responses.append(response["response_obj"])
         return response
 
-    def get_observation(self, response: dict) -> dict:
+    async def get_observation(self, response: dict) -> dict:
         """Execute the action and return the observation."""
-        output = self.execute_action(self.parse_action(response))
+        output = await self.execute_action(self.parse_action(response))
         observation = self.render_template(self.config.action_observation_template, output=output)
         self.add_message("user", observation)
         return output
@@ -180,9 +181,9 @@ class DefaultAgent:
             return {"action": action, **response}
         raise FormatError(self.render_template(self.config.format_error_template, actions=actions))
 
-    def execute_action(self, action: dict) -> dict:
+    async def execute_action(self, action: dict) -> dict:
         try:
-            output = self.env.execute(action["action"])
+            output = await self.env.execute(action["action"])
         except subprocess.TimeoutExpired as e:
             output = e.output.decode("utf-8", errors="replace") if e.output else ""
             raise ExecutionTimeoutError(

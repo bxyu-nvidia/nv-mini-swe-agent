@@ -123,6 +123,7 @@ def run_eval(
         res = env.execute(command="git apply patch.diff")
 
     eval_script = test_spec.eval_script.replace("#!/bin/bash", "")
+    # TODO asyncify
     res = env.execute(command=eval_script, is_eval=True)
 
     test_output, returncode = res["output"], res["returncode"]
@@ -150,7 +151,7 @@ def run_eval(
     }
 
 
-def process_instance(
+async def process_instance(
     instance: dict,
     output_dir: Path,
     model_name: str | None,
@@ -230,7 +231,7 @@ def process_instance(
 
         print(f"[EVAL]{instance_id} Running agent...", flush=True)
         if not run_golden:
-            exit_status, result = agent.run(task)
+            exit_status, result = await agent.run(task)
         else:
             exit_status, result = "Gold Patch Applied", instance.get("patch", "")
 
